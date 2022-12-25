@@ -15,11 +15,14 @@ from telegram.ext import Updater, CommandHandler
 # update.effective_user.name - user Telegram Nick
 # update.effective_user.id - user_id
 
+# STRUCT FOR NOTES:
+# chat_data: {'notes': {'note_id':{'note_name': "", 'note': ""}}}
+
 # STRUCT FOR ACCESS:
 # Access_dict_owner:
-# {'owner_id': {'note_name' : [user1_nick, user2_nick], 'note_name2': [user3_nick]}}
+# {'owner_id': {'note1_id' : [user1_nick, user2_nick], 'note2_id': [user3_nick]}}
 # Access_dict_viewer
-# {'viewer_nick': [(owner1_id, note_name1), (owner2_id, note_name2)] }
+# {'viewer_nick': [(owner1_id, note1_id), (owner2_id, note2_id)] }
 # STRUCT FOR MATCHING user_nick -> user_id
 # {user_nick: user_id, ...}
 
@@ -27,6 +30,13 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
+
+
+def max_(A: set):
+    if A:
+        return max(A)
+    else:
+        return 0
 
 
 class NotesBot:
@@ -46,6 +56,9 @@ class NotesBot:
 
         if not self.updater.dispatcher.bot_data.get('matching_chat_id_nick'):
             self.updater.dispatcher.bot_data['matching_chat_id_nick'] = dict()
+
+        if not self.updater.dispatcher.bot_data.get('ids_notes'):
+            self.updater.dispatcher.bot_data['ids_notes'] = set()
 
         dp = self.updater.dispatcher
 
@@ -112,7 +125,7 @@ class NotesBot:
         user_nick = update.effective_user.name
         chat_id = update.message.chat_id
         context.bot_data['matching_user_nick_chatid'][user_nick] = chat_id
-        context.bot_data['matching_user_nick_chatid'][chat_id] = user_nick
+        context.bot_data['matching_chat_id_nick'][chat_id] = user_nick
 
         send_keyboard(update, context)
         return 1
@@ -127,44 +140,50 @@ class NotesBot:
                 update.message.reply_text('Note with such name already exists! Please delete it first')
                 return ConversationHandler.END
             else:
-                context.chat_data['notes'][update.message.text] = ""
+                new_id = max_(context.bot_data['ids_notes']) + 1
+                context.chat_data['notes'][new_id] = {"note_name": update.message.text, "note": ""}
         else:
-            context.chat_data['notes'] = {update.message.text: ""}
-        context.chat_data['wants_to_add_note'] = update.message.text
+            new_id = max_(context.bot_data['ids_notes']) + 1
+            context.chat_data['notes'] = defaultdict(dict)
+            context.chat_data['notes'][new_id] = {"note_name": update.message.text, "note": ""}
+        context.chat_data['wants_to_add_note_id'] = new_id
+        context.bot_data['ids_notes'].add(new_id)
         update.message.reply_text('Please add your Note:', reply_markup=ForceReply(True))
         return 2
 
     def add_note(self, update, context):
-        context.chat_data['notes'][context.chat_data['wants_to_add_note']] = update.message.text
+        note_id = context.chat_data['wants_to_add_note_id']
+        context.chat_data['notes'][note_id]["note"] = update.message.text
         update.message.reply_text('Your note successfully saved!')
-        context.chat_data['wants_to_add_note'] = None
+        context.chat_data['wants_to_add_note_id'] = None
         send_keyboard(update, context)
         return ConversationHandler.END
 
     def existing_notes(self, update, context):
         flag = False
-        for note_name, note in context.chat_data.get('notes', dict()).items():
+        for note_id, note_dict in context.chat_data.get('notes', dict()).items():
             flag = True
             keyboard = [
                 [
                     InlineKeyboardButton("Edit", switch_inline_query_current_chat="aaa",
-                                         callback_data=json.dumps({"type": "edit", "Note_name": note_name,
-                                                                   "user_t": "owner"}))
+                                         callback_data=json.dumps({"type": "edit", "note_id": note_id,
+                                                                   "user_type": "owner"}))
                 ],
                 [
                     InlineKeyboardButton("Delete",
-                                         callback_data=json.dumps({"type": "delete", "Note_name": note_name,
-                                                                   "user_t": "owner"}))
+                                         callback_data=json.dumps({"type": "delete", "note_id": note_id,
+                                                                   "user_type": "owner"}))
                 ],
                 [
                     InlineKeyboardButton("Share",
-                                         callback_data=json.dumps({"type": "share", "Note_name": note_name,
-                                                                   "user_t": "owner"}))
+                                         callback_data=json.dumps({"type": "share", "note_id": note_id,
+                                                                   "user_type": "owner"}))
                 ]
 
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            update.message.reply_text(f'*{note_name}* \n{note}', parse_mode=ParseMode.MARKDOWN,
+            update.message.reply_text(f'*{note_dict["note_name"]}* \n{note_dict["note"]}',
+                                      parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=reply_markup)
 
         user_nick = update.effective_user.name
@@ -173,17 +192,18 @@ class NotesBot:
             if not flag:
                 update.message.reply_text("Not found any existing notes!")
             return ConversationHandler.END
-        for chat_id, note_name in context.bot_data['access_dict_viewer'][user_nick]:
+        for chat_id, note_id in context.bot_data['access_dict_viewer'][user_nick]:
             flag = True
-            note = self.updater.dispatcher.chat_data[chat_id]['notes'][note_name]
+            note_dict = self.updater.dispatcher.chat_data[chat_id]['notes'][note_id]
             keyboard = [
                 [
-                    InlineKeyboardButton("Edit", callback_data=json.dumps({"type": "edit", "Note_name": note_name,
-                                                                           "user_t": "guest"}))
+                    InlineKeyboardButton("Edit", callback_data=json.dumps({"type": "edit", "note_id": note_id,
+                                                                           "user_type": "guest"}))
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            update.message.reply_text(f'*[SHARED] {note_name}* \n{note}', parse_mode=ParseMode.MARKDOWN,
+            update.message.reply_text(f'*[SHARED] {note_dict["note_name"]}* \n{note_dict["note"]}',
+                                      parse_mode=ParseMode.MARKDOWN,
                                       reply_markup=reply_markup)
 
         if not flag:
@@ -193,7 +213,7 @@ class NotesBot:
     def edit_note(self, update, context):
         data = context.chat_data['wants_to_edit_note']
         if data['user_type'] == 'owner':
-            context.chat_data['notes'][data['note_name']] = update.message.text
+            context.chat_data['notes'][data['note_id']]['note'] = update.message.text
             update.message.reply_text("Your note successfully updated!")
             context.chat_data['wants_to_edit_note'] = None
             send_keyboard(update, context, button=False)
@@ -201,9 +221,9 @@ class NotesBot:
         else:
             # find owner
             user_nick = update.effective_user.name
-            for owner, note_name in context.bot_data['access_dict_viewer'][user_nick]:
-                if note_name == data['note_name']:
-                    self.updater.dispatcher.chat_data[owner]['notes'][note_name] = update.message.text
+            for owner, note_id in context.bot_data['access_dict_viewer'][user_nick]:
+                if note_id == data['note_id']:
+                    self.updater.dispatcher.chat_data[owner]['notes'][note_id]['note'] = update.message.text
                     update.message.reply_text("Your note successfully updated!")
                     context.chat_data['wants_to_edit_note'] = None
                     send_keyboard(update, context, button=False)
@@ -212,21 +232,27 @@ class NotesBot:
             f"Something went wrong, I didn't find this note!")
         return ConversationHandler.END
 
-    def delete_note(self, update, context, want_to_delete):
+    def delete_note(self, update, context, note_id_to_delete):
         chat_id = update.callback_query.message.chat.id
         # owner_id = update.effective_user.id
 
-        if context.chat_data.get('notes').get(want_to_delete):
-            del context.chat_data['notes'][want_to_delete]
-            if want_to_delete in context.bot_data['access_dict_owner'][chat_id].keys():
-                del context.bot_data['access_dict_owner'][chat_id][want_to_delete]
+        if context.chat_data.get('notes').get(note_id_to_delete):
+            # 1. Delete from user's notes
+            del context.chat_data['notes'][note_id_to_delete]
+            # 2. Delete fro unique ids
+            self.updater.dispatcher.bot_data['ids_notes'].remove(note_id_to_delete)
+            # 3. Remove from access_dict_owner
+            if note_id_to_delete in context.bot_data['access_dict_owner'][chat_id].keys():
+                del context.bot_data['access_dict_owner'][chat_id][note_id_to_delete]
+            # 4. Remove from access_dict_viewer
             for user_nick_invite, set_notes in context.bot_data['access_dict_viewer'].items():
-                set_notes.discard((chat_id, want_to_delete))
+                set_notes.discard((chat_id, note_id_to_delete))
 
             context.bot.send_message(chat_id=chat_id, text="Your note successfully deleted!")
             return ConversationHandler.END
 
-        context.bot.send_message(chat_id=chat_id, text=f"I didn't find note with name {want_to_delete}!")
+        note_name = context.chat_data.get('notes')[note_id_to_delete]
+        context.bot.send_message(chat_id=chat_id, text=f"I didn't find note with name {note_name}!")
         return ConversationHandler.END
 
     def button(self, update: Update, context):
@@ -238,29 +264,43 @@ class NotesBot:
         # Some clients may have trouble otherwise. See https://core.telegram.org/bots/api#callbackquery
         query.answer()
 
-        data = json.loads(query.data)
         chat_id = update.callback_query.message.chat.id
+        data = json.loads(query.data)
+        if data['user_type'] == 'guest':
+            # find owner
+            note_name = None
+            user_nick = update.effective_user.name
+            for owner, note_id in context.bot_data['access_dict_viewer'][user_nick]:
+                if note_id == data['note_id']:
+                    note_name = self.updater.dispatcher.chat_data[owner]['notes'][note_id]['note_name']
+            if not note_name:
+                context.bot.send_message(chat_id=chat_id, text="Something went wrong, I didn't find this note!")
+                return ConversationHandler.END
+        else:
+            note_name = context.chat_data['notes'][data['note_id']]['note_name']
+
         if data['type'] == 'edit':
-            text = f"Selected Note: {data['Note_name']}. Please type your updated Note:"
+            text = f"Selected Note: {note_name}. Please type your updated Note:"
             context.bot.send_message(chat_id=chat_id, text=text, reply_markup=ForceReply(True))
-            context.chat_data['wants_to_edit_note'] = {'note_name': data['Note_name'], 'user_type': data['user_t']}
+            context.chat_data['wants_to_edit_note'] = {'note_id': data['note_id'], 'user_type': data['user_type']}
             return 'edit'
         elif data['type'] == 'delete':
-            text = f"Selected Note: {data['Note_name']}"
+            text = f"Selected Note: {note_name}"
             context.bot.send_message(chat_id=chat_id, text=text)
-            self.delete_note(update, context, want_to_delete=data['Note_name'])
+            self.delete_note(update, context, note_id_to_delete=data['note_id'])
             return ConversationHandler.END
         elif data['type'] == 'share':
             text = f"Write user's nick which will get access *(Use @ before users nickname)*:"
             context.bot.send_message(chat_id=chat_id, text=text, reply_markup=ForceReply(True))
-            context.chat_data['wants_to_share_note'] = data['Note_name']
+            context.chat_data['wants_to_share_note'] = {'note_id': data['note_id'], 'note_name': note_name}
             return 'share'
 
     def share_add(self, update, context):
         # owner_id = update.effective_user.id
         chat_id = update.message.chat_id
         user_nick_invite = update.message.text
-        note_name = context.chat_data.get('wants_to_share_note')
+        note_id = context.chat_data.get('wants_to_share_note').get('note_id')
+        note_name = context.chat_data.get('wants_to_share_note').get('note_name')
         context.chat_data['wants_to_share_note'] = None
         if note_name:
             # STRUCT FOR ACCESS:
@@ -268,8 +308,8 @@ class NotesBot:
             # {'owner': {'note_name' : [user1, user2], 'note_name2': [user3]}}
             # Access_dict_viewer
             # {'viewer': [(owner1, note_name1), (owner2, note_name2)] }
-            context.bot_data['access_dict_owner'][chat_id][note_name].add(user_nick_invite)
-            context.bot_data['access_dict_viewer'][user_nick_invite].add((chat_id, note_name))
+            context.bot_data['access_dict_owner'][chat_id][note_id].add(user_nick_invite)
+            context.bot_data['access_dict_viewer'][user_nick_invite].add((chat_id, note_id))
             update.message.reply_text(f'User {user_nick_invite} got access to {note_name}!')
             send_keyboard(update, context)
             return ConversationHandler.END
@@ -286,20 +326,22 @@ class NotesBot:
         if not context.bot_data.get('access_dict_viewer').get(user_nick):
             update.message.reply_text('You have no notes shared with you')
         else:
-            for chat_id, note_name in context.bot_data.get('access_dict_viewer').get(user_nick):
-                note = self.updater.dispatcher.chat_data[chat_id]['notes'][note_name]
-                owner_nick = context.bot_data['matching_user_nick_chatid'][chat_id]
+            for chat_id, note_id in context.bot_data.get('access_dict_viewer').get(user_nick):
+                note = self.updater.dispatcher.chat_data[chat_id]['notes'][note_id]
+                owner_nick = context.bot_data['matching_chat_id_nick'][chat_id]
                 update.message.reply_text(
-                    f'Owner {owner_nick} sharing note {note_name} with you, it is below: \n{note}')
+                    f"Owner {owner_nick} sharing note '{note['note_name']}' with you, it is below: \n{note['note']}")
 
         chat_id = update.message.chat_id
         # send all notes that you sharing
         you_sharing = context.bot_data.get('access_dict_owner').get(chat_id)
         if you_sharing:
-            for note_name, set_user in you_sharing.items():
+            for note_id, set_user in you_sharing.items():
                 if set_user:
+                    note_name = context.chat_data['notes'][note_id]['note_name']
                     update.message.reply_text(
-                        f"Note '{note_name}' shared with users: {set_user}. Note is below:\n{context.chat_data['notes'][note_name]}")
+                        f"Note '{note_name}' shared with users: {set_user}."
+                        f" Note is below:\n{context.chat_data['notes'][note_id]['note']}")
         else:
             update.message.reply_text('You do not share any notes')
 
