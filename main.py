@@ -2,7 +2,8 @@ import logging
 import json
 from collections import defaultdict
 from functools import partial
-from telegram import ParseMode, Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram import ParseMode, Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply, ReplyKeyboardMarkup, \
+    KeyboardButton
 from telegram.ext import ConversationHandler, MessageHandler, Filters, \
     PicklePersistence, CallbackQueryHandler, ContextTypes
 from utils.constants import REPLY_MARKUP, ADD_NOTE, EXISTING_NOTES, SHARING, TOKENS
@@ -107,6 +108,7 @@ class NotesBot:
         dp.add_handler(MessageHandler(Filters.regex(f"^({SHARING})$"), self.note_sharing_all))
 
         # SYSTEM / DEV
+        dp.add_handler(CommandHandler('test_dev', self.test_dev))
         dp.add_handler(CommandHandler('get', self.get))
 
         # If do not understand
@@ -165,12 +167,12 @@ class NotesBot:
             flag = True
             keyboard = [
                 [
-                    InlineKeyboardButton("Edit", switch_inline_query_current_chat="aaa",
+                    InlineKeyboardButton("Edit",
                                          callback_data=json.dumps({"type": "edit", "note_id": note_id,
                                                                    "user_type": "owner"}))
                 ],
                 [
-                    InlineKeyboardButton("Delete",
+                    InlineKeyboardButton("Delete",  # switch_inline_query_current_chat=note_dict['note'])
                                          callback_data=json.dumps({"type": "delete", "note_id": note_id,
                                                                    "user_type": "owner"}))
                 ],
@@ -234,9 +236,11 @@ class NotesBot:
 
     def delete_note(self, update, context, note_id_to_delete):
         chat_id = update.callback_query.message.chat.id
+        owner_nick = self.updater.dispatcher.bot_data['matching_chat_id_nick'].get(chat_id)
         # owner_id = update.effective_user.id
 
         if context.chat_data.get('notes').get(note_id_to_delete):
+            note_name = context.chat_data['notes'][note_id_to_delete]['note_name']
             # 1. Delete from user's notes
             del context.chat_data['notes'][note_id_to_delete]
             # 2. Delete fro unique ids
@@ -246,7 +250,12 @@ class NotesBot:
                 del context.bot_data['access_dict_owner'][chat_id][note_id_to_delete]
             # 4. Remove from access_dict_viewer
             for user_nick_invite, set_notes in context.bot_data['access_dict_viewer'].items():
-                set_notes.discard((chat_id, note_id_to_delete))
+                if set_notes:
+                    chat_id_guest = self.updater.dispatcher.bot_data['matching_user_nick_chatid'].get(user_nick_invite)
+                    if chat_id_guest:
+                        context.bot.send_message(text=f"User {owner_nick} deleted note '{note_name}'!",
+                                                 chat_id=chat_id_guest)
+                    set_notes.discard((chat_id, note_id_to_delete))
 
             context.bot.send_message(chat_id=chat_id, text="Your note successfully deleted!")
             return ConversationHandler.END
@@ -311,6 +320,12 @@ class NotesBot:
             context.bot_data['access_dict_owner'][chat_id][note_id].add(user_nick_invite)
             context.bot_data['access_dict_viewer'][user_nick_invite].add((chat_id, note_id))
             update.message.reply_text(f'User {user_nick_invite} got access to {note_name}!')
+
+            chat_id_guest = self.updater.dispatcher.bot_data['matching_user_nick_chatid'].get(user_nick_invite)
+            if chat_id_guest:
+                owner_nick = self.updater.dispatcher.bot_data['matching_chat_id_nick'].get(chat_id)
+                context.bot.send_message(text=f"User {owner_nick} granted you access to note '{note_name}'!",
+                                         chat_id=chat_id_guest)
             send_keyboard(update, context)
             return ConversationHandler.END
         else:
@@ -351,6 +366,10 @@ class NotesBot:
                                  reply_markup=REPLY_MARKUP)
 
         # This function is only for development purposes, you can call from bot with commad /get ...
+
+    def test_dev(self, update, context):
+        new_query = 'new_query' + 'aaa'
+        context.bot.switch_inline_query_current_chat(update.inline_query.id, new_query)
 
     def get(self, update, context):
         chat_id = str(update.message.chat_id)
